@@ -25,7 +25,6 @@ def check_password():
                     st.rerun()
                 else:
                     st.error("😕 Senha incorreta.")
-                    st.info(f"🔍 DEBUG -> O sistema leu do arquivo: '{esperada}', e você digitou: '{digitada}'")
             except KeyError:
                 st.error("Erro: secrets.toml não configurado na chave [auth] access_password.")
                 
