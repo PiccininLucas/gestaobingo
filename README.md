@@ -46,7 +46,7 @@ Certifique-se de ter o Python instalado na sua máquina e as dependências do pr
 3. **Inicie o Servidor Streamlit:**
    Execute o comando abaixo no terminal:
    ```bash
-   streamlit run app.py
+   python -m streamlit run app.py
    ```
 
 O sistema abrirá automaticamente no seu navegador padrão.
