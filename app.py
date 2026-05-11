@@ -7,26 +7,30 @@ import datetime
 st.set_page_config(page_title="Gestão de Bingo 2026", layout="wide", page_icon="🎱")
 
 def check_password():
-    """Valida a senha do usuário verificando no st.secrets"""
+    """Valida o usuário e a senha verificando no st.secrets"""
     if st.session_state.get("password_correct", False):
         return True
 
     st.title("🔒 Acesso Restrito")
     with st.form("login_form"):
-        pwd = st.text_input("Digite a senha de acesso ao sistema", type="password")
+        username_input = st.text_input("Usuário")
+        pwd = st.text_input("Senha", type="password")
         submitted = st.form_submit_button("Entrar")
         
         if submitted:
             try:
-                esperada = str(st.secrets["auth"]["access_password"]).strip()
+                usernames_dict = st.secrets["credentials"]["usernames"]
+                user = str(username_input).strip()
                 digitada = str(pwd).strip()
-                if digitada == esperada:
+                
+                if user in usernames_dict and usernames_dict[user] == digitada:
                     st.session_state["password_correct"] = True
+                    st.session_state["logged_user"] = user
                     st.rerun()
                 else:
-                    st.error("😕 Senha incorreta.")
+                    st.error("😕 Usuário ou senha incorretos.")
             except KeyError:
-                st.error("Erro: secrets.toml não configurado na chave [auth] access_password.")
+                st.error("Erro: secrets.toml não configurado na chave [credentials] usernames.")
                 
     return False
 
@@ -109,6 +113,28 @@ def init_db():
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS audit_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id INTEGER,
+            action TEXT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    try:
+        c.execute("ALTER TABLE audit_logs ADD COLUMN username TEXT DEFAULT 'Sistema'")
+    except sqlite3.OperationalError:
+        pass
+    conn.commit()
+    conn.close()
+
+def log_action(event_id, action):
+    conn = get_conn()
+    username = st.session_state.get("logged_user", "Sistema")
+    try:
+        conn.execute("INSERT INTO audit_logs (event_id, action, username) VALUES (?, ?, ?)", (event_id, action, username))
+    except sqlite3.OperationalError:
+        conn.execute("INSERT INTO audit_logs (event_id, action) VALUES (?, ?)", (event_id, action))
     conn.commit()
     conn.close()
 
@@ -200,8 +226,11 @@ if st.sidebar.button("➕ Novo Vendedor", use_container_width=True):
     add_vendor_modal()
 
 st.sidebar.divider()
+current_user = st.session_state.get("logged_user", "Usuário")
+st.sidebar.markdown(f"**Bem-vindo, {current_user.capitalize()}!**")
 if st.sidebar.button("🚪 Sair (Logout)", use_container_width=True):
     st.session_state["password_correct"] = False
+    st.session_state["logged_user"] = None
     st.rerun()
 
 conn.close()
@@ -219,6 +248,7 @@ def add_round_modal(event_id):
             try:
                 conn.execute("INSERT INTO rounds (event_id, round_type, name, valor_cartela) VALUES (?, ?, ?, ?)", (event_id, round_type, name, valor_cartela))
                 conn.commit()
+                log_action(event_id, f"Criou a rodada {round_type} - {name} com cartela a R$ {valor_cartela:.2f}")
                 st.success(f"Rodada {round_type} - {name} criada com sucesso!")
                 st.rerun()
             except sqlite3.IntegrityError:
@@ -229,7 +259,7 @@ def add_round_modal(event_id):
             st.error("Informe a sequência/nome da rodada.")
 
 @st.dialog("Registro de Vendedor")
-def open_vendor_modal(r_id, vid, vname, r_price):
+def open_vendor_modal(r_id, vid, vname, r_price, event_id):
     conn = get_conn()
     c = conn.cursor()
     c.execute('SELECT * FROM vendor_rounds WHERE round_id=? AND vendor_id=?', (r_id, vid))
@@ -291,13 +321,14 @@ def open_vendor_modal(r_id, vid, vname, r_price):
         ''', (r_id, vid, cr, ca, cd, vd, vp, vsf, vdeb))
         conn_local.commit()
         conn_local.close()
+        log_action(event_id, f"Salvou registro do vendedor {vname} na rodada ID {r_id} (Cartelas vendidas: {cartelas_vendidas}, Devolvido: R$ {valor_devolvido:.2f})")
         st.toast(f"Registro de {vname} salvo!")
         st.rerun()
 
 # Interface Principal
 st.title(f"🎱 Sistema de Controle - {active_event_name}")
 
-tab1, tab2, tab3, tab4 = st.tabs(["⚙️ Dados do Dia", "🎯 Rodadas e Vendedores", "💰 Sangria", "📊 Fechamento"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["⚙️ Dados do Dia", "🎯 Rodadas e Vendedores", "💰 Sangria", "📊 Fechamento", "📋 Logs"])
 
 with tab1:
     st.header("Dados Iniciais do Evento")
@@ -308,6 +339,7 @@ with tab1:
         caixa_inicial = st.number_input("Valor do Caixa Inicial (R$)", min_value=0.0, step=10.0, value=float(current_caixa), format="%.2f")
         if st.button("Salvar Caixa Inicial", type="primary"):
             set_setting(active_event_id, 'caixa_inicial', caixa_inicial)
+            log_action(active_event_id, f"Definiu o caixa inicial como R$ {caixa_inicial:.2f}")
             st.success("Caixa inicial salvo para este evento!")
             
     with colB:
@@ -373,6 +405,7 @@ with tab1:
                     
             conn.commit()
             conn.close()
+            log_action(active_event_id, "Atualizou a lista de vendedores ativos e os trocos enviados.")
             st.success("Vendedores e trocos atualizados com sucesso!")
             st.rerun()
         else:
@@ -426,7 +459,7 @@ with tab2:
             c1, c2 = st.columns([3, 1])
             with c1:
                 if st.button(vname, key=f"btn_modal_{r_id}_{vid}", use_container_width=True, type="secondary"):
-                    open_vendor_modal(r_id, vid, vname, r_price)
+                    open_vendor_modal(r_id, vid, vname, r_price, active_event_id)
             with c2:
                 st.markdown(f"<div style='margin-top: 5px;'>{status}</div>", unsafe_allow_html=True)
 
@@ -478,6 +511,7 @@ with tab3:
             conn.execute("INSERT INTO sangrias (event_id, valor) VALUES (?, ?)", (active_event_id, sangria_val))
             conn.commit()
             conn.close()
+            log_action(active_event_id, f"Registrou uma sangria de R$ {sangria_val:.2f}")
             st.success(f"Sangria de R$ {sangria_val:.2f} registrada com sucesso!")
         else:
             st.error("O valor deve ser maior que zero.")
@@ -514,6 +548,7 @@ with tab4:
         dinheiro_fechamento = st.number_input("Valor em Dinheiro Existente (R$)", min_value=0.0, step=10.0, value=float(current_dinheiro), format="%.2f")
         if st.button("Salvar Valor em Caixa"):
             set_setting(active_event_id, 'dinheiro_fechamento', dinheiro_fechamento)
+            log_action(active_event_id, f"Definiu o dinheiro final em caixa como R$ {dinheiro_fechamento:.2f}")
             st.success("Valor em caixa salvo para este evento!")
             st.rerun()
             
@@ -547,6 +582,7 @@ with tab4:
                     vid = int(row['id'])
                     conn.execute("UPDATE event_vendors SET troco_devolvido=? WHERE event_id=? AND vendor_id=?", (td, active_event_id, vid))
                 conn.commit()
+                log_action(active_event_id, "Atualizou os valores de troco devolvido pelos vendedores no fechamento.")
                 st.success("Troco devolvido atualizado!")
                 st.rerun()
         else:
@@ -639,3 +675,34 @@ with tab4:
         **Receita Líquida (RL) = VC - CI**
         RL = {VC:.2f} - {caixa_inicial:.2f} = **R$ {RL:.2f}**
         ''')
+
+with tab5:
+    st.header("Logs de Auditoria do Evento")
+    st.write("Acompanhe o histórico de ações e edições importantes realizadas neste evento.")
+    
+    conn = get_conn()
+    try:
+        df_logs = pd.read_sql('SELECT timestamp, username, action FROM audit_logs WHERE event_id = ? ORDER BY timestamp DESC', conn, params=(active_event_id,))
+    except Exception:
+        df_logs = pd.read_sql('SELECT timestamp, action FROM audit_logs WHERE event_id = ? ORDER BY timestamp DESC', conn, params=(active_event_id,))
+    conn.close()
+    
+    if not df_logs.empty:
+        df_logs['timestamp'] = pd.to_datetime(df_logs['timestamp']).dt.strftime('%d/%m/%Y %H:%M:%S')
+        
+        col_config = {
+            "timestamp": "Data / Hora",
+            "action": st.column_config.TextColumn("Descrição da Ação")
+        }
+        if 'username' in df_logs.columns:
+            col_config["username"] = "Usuário"
+            
+        st.dataframe(
+            df_logs,
+            column_config=col_config,
+            hide_index=True,
+            use_container_width=True
+        )
+    else:
+        st.info("Nenhuma atividade registrada para este evento ainda.")
+
