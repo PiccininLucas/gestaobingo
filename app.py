@@ -4,6 +4,67 @@ import sqlite3
 import os
 import datetime
 
+# --- ADAPTADOR POSTGRESQL / SQLITE ---
+# Este bloco permite que o código original (SQLite) rode no PostgreSQL do Supabase sem alterar a lógica
+_original_read_sql = pd.read_sql
+def custom_read_sql(sql, con, *args, **kwargs):
+    if hasattr(con, 'is_postgres') and con.is_postgres:
+        sql = sql.replace('?', '%s')
+        return _original_read_sql(sql, con.conn, *args, **kwargs)
+    return _original_read_sql(sql, con, *args, **kwargs)
+pd.read_sql = custom_read_sql
+
+class PostgresCursorWrapper:
+    def __init__(self, cursor):
+        self.cursor = cursor
+        self.lastrowid = None
+
+    def execute(self, sql, params=()):
+        sql = sql.replace('?', '%s')
+        sql = sql.replace('INTEGER PRIMARY KEY AUTOINCREMENT', 'SERIAL PRIMARY KEY')
+        sql = sql.replace('DATETIME DEFAULT CURRENT_TIMESTAMP', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
+        sql = sql.replace('BOOLEAN DEFAULT 1', 'BOOLEAN DEFAULT TRUE')
+        
+        if "INSERT OR IGNORE INTO vendors" in sql:
+            sql = "INSERT INTO vendors (name) VALUES (%s) ON CONFLICT (name) DO NOTHING"
+            
+        try:
+            self.cursor.execute(sql, params)
+        except Exception as e:
+            err_type = type(e).__name__
+            if "UniqueViolation" in err_type:
+                raise sqlite3.IntegrityError(str(e))
+            elif err_type in ["DuplicateColumn", "UndefinedColumn", "InFailedSqlTransaction"]:
+                raise sqlite3.OperationalError(str(e))
+            else:
+                raise e
+        return self
+
+    def fetchone(self):
+        return self.cursor.fetchone()
+
+    def fetchall(self):
+        return self.cursor.fetchall()
+
+class PostgresConnWrapper:
+    def __init__(self, conn):
+        self.conn = conn
+        self.is_postgres = True
+
+    def cursor(self):
+        return PostgresCursorWrapper(self.conn.cursor())
+
+    def execute(self, sql, params=()):
+        c = self.cursor()
+        c.execute(sql, params)
+        return c
+
+    def commit(self):
+        self.conn.commit()
+
+    def close(self):
+        self.conn.close()
+
 st.set_page_config(page_title="Gestão de Bingo 2026", layout="wide", page_icon="🎱")
 
 def check_password():
@@ -40,6 +101,10 @@ if not check_password():
 DB_FILE = 'bingo_2026.db'
 
 def get_conn():
+    if "postgres" in st.secrets:
+        import psycopg2
+        conn = psycopg2.connect(st.secrets["postgres"]["url"])
+        return PostgresConnWrapper(conn)
     return sqlite3.connect(DB_FILE, check_same_thread=False)
 
 def init_db():
@@ -76,10 +141,14 @@ def init_db():
             PRIMARY KEY (event_id, vendor_id)
         )
     ''')
+    conn.commit()
     try:
         c.execute('ALTER TABLE event_vendors ADD COLUMN is_active BOOLEAN DEFAULT 1')
+        conn.commit()
     except sqlite3.OperationalError:
-        pass
+        if hasattr(conn, 'is_postgres'):
+            conn.conn.rollback()
+
     c.execute('''
         CREATE TABLE IF NOT EXISTS rounds (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -121,11 +190,13 @@ def init_db():
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    conn.commit()
     try:
         c.execute("ALTER TABLE audit_logs ADD COLUMN username TEXT DEFAULT 'Sistema'")
+        conn.commit()
     except sqlite3.OperationalError:
-        pass
-    conn.commit()
+        if hasattr(conn, 'is_postgres'):
+            conn.conn.rollback()
     conn.close()
 
 def log_action(event_id, action):
@@ -134,6 +205,8 @@ def log_action(event_id, action):
     try:
         conn.execute("INSERT INTO audit_logs (event_id, action, username) VALUES (?, ?, ?)", (event_id, action, username))
     except sqlite3.OperationalError:
+        if hasattr(conn, 'is_postgres'):
+            conn.conn.rollback()
         conn.execute("INSERT INTO audit_logs (event_id, action) VALUES (?, ?)", (event_id, action))
     conn.commit()
     conn.close()
@@ -348,7 +421,7 @@ with tab1:
         conn = get_conn()
         
         query = '''
-            SELECT v.id, v.name, COALESCE(ev.is_active, 0) as is_active, COALESCE(ev.troco_enviado, 0.0) as troco_enviado
+            SELECT v.id, v.name, COALESCE(ev.is_active, FALSE) as is_active, COALESCE(ev.troco_enviado, 0.0) as troco_enviado
             FROM vendors v
             LEFT JOIN event_vendors ev ON v.id = ev.vendor_id AND ev.event_id = ?
         '''
@@ -378,7 +451,7 @@ with tab1:
 
             for _, row in edited_vendors.iterrows():
                 name = row['name'] if pd.notna(row['name']) else ""
-                is_active = int(row['is_active']) if pd.notna(row['is_active']) else 1
+                is_active = bool(row['is_active']) if pd.notna(row['is_active']) else True
                 t_env = row['troco_enviado'] if pd.notna(row['troco_enviado']) else 0.0
                 
                 if pd.isna(row['id']) and name:
