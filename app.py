@@ -270,6 +270,11 @@ def add_vendor_modal():
 st.sidebar.title("📅 Gestão de Eventos")
 
 conn = get_conn()
+if hasattr(conn, 'is_postgres'):
+    st.sidebar.success("🟢 Conectado à Nuvem (Supabase)")
+else:
+    st.sidebar.warning("🟡 Modo de Segurança: Banco Local (SQLite)")
+
 df_events = pd.read_sql('SELECT * FROM events ORDER BY id DESC', conn)
 
 with st.sidebar.expander("➕ Novo Evento", expanded=False):
