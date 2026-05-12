@@ -101,7 +101,12 @@ if not check_password():
 DB_FILE = 'bingo_2026.db'
 
 def get_conn():
-    if "postgres" in st.secrets:
+    # Suporte para o padrão st.secrets["connections"]["postgresql"] ou st.secrets["postgres"]
+    if "connections" in st.secrets and "postgresql" in st.secrets["connections"]:
+        import psycopg2
+        conn = psycopg2.connect(st.secrets["connections"]["postgresql"]["url"])
+        return PostgresConnWrapper(conn)
+    elif "postgres" in st.secrets:
         import psycopg2
         conn = psycopg2.connect(st.secrets["postgres"]["url"])
         return PostgresConnWrapper(conn)
