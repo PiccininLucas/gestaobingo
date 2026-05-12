@@ -1,7 +1,14 @@
 import streamlit as st
 import pandas as pd
 from database.connection import get_conn
-from database.queries import get_setting, set_setting, log_action
+from database.queries import set_setting, log_action
+from database.cache import (
+    cached_get_setting,
+    cached_get_vendors,
+    cached_get_rounds,
+    cached_get_all_vendor_rounds_for_event,
+    cached_get_sangrias,
+)
 
 def render_tab_fechamento(active_event_id):
     st.header("Fechamento do Evento")
@@ -9,24 +16,21 @@ def render_tab_fechamento(active_event_id):
     colA, colB = st.columns([1, 2])
     with colA:
         st.subheader("Dinheiro em Caixa")
-        current_dinheiro = get_setting(active_event_id, 'dinheiro_fechamento', 0.0)
+        current_dinheiro = cached_get_setting(active_event_id, 'dinheiro_fechamento', 0.0)
         dinheiro_fechamento = st.number_input("Valor em Dinheiro Existente (R$)", min_value=0.0, step=10.0, value=float(current_dinheiro), format="%.2f")
         if st.button("Salvar Valor em Caixa"):
             set_setting(active_event_id, 'dinheiro_fechamento', dinheiro_fechamento)
             log_action(active_event_id, f"Definiu o dinheiro final em caixa como R$ {dinheiro_fechamento:.2f}")
+            st.cache_data.clear()
             st.success("Valor em caixa salvo para este evento!")
             st.rerun()
             
     with colB:
         st.subheader("Troco Devolvido pelos Vendedores")
-        conn = get_conn()
-        query_v_fechamento = '''
-            SELECT v.id, v.name, COALESCE(ev.troco_enviado, 0.0) as troco_enviado, COALESCE(ev.troco_devolvido, 0.0) as troco_devolvido
-            FROM vendors v
-            LEFT JOIN event_vendors ev ON v.id = ev.vendor_id AND ev.event_id = ?
-        '''
-        df_v_fechamento = pd.read_sql(query_v_fechamento, conn, params=(active_event_id,))
         
+        # Leitura via cache — sem query nova ao Supabase
+        df_vendors = cached_get_vendors(active_event_id)
+        df_v_fechamento = df_vendors[['id', 'name', 'troco_enviado', 'troco_devolvido']].copy()
         df_v_fechamento_ativo = df_v_fechamento[df_v_fechamento['troco_enviado'] > 0].copy()
         
         if not df_v_fechamento_ativo.empty:
@@ -42,12 +46,20 @@ def render_tab_fechamento(active_event_id):
                 use_container_width=True
             )
             if st.button("Atualizar Troco Devolvido"):
+                conn = get_conn()
                 for _, row in edited_v_fechamento.iterrows():
                     td = row['troco_devolvido'] if pd.notna(row['troco_devolvido']) else 0.0
                     vid = int(row['id'])
-                    conn.execute("UPDATE event_vendors SET troco_devolvido=? WHERE event_id=? AND vendor_id=?", (td, active_event_id, vid))
+                    conn.execute(
+                        "UPDATE event_vendors SET troco_devolvido = %s WHERE event_id = %s AND vendor_id = %s"
+                        if hasattr(conn, 'is_postgres')
+                        else "UPDATE event_vendors SET troco_devolvido = ? WHERE event_id = ? AND vendor_id = ?",
+                        (td, active_event_id, vid)
+                    )
                 conn.commit()
+                conn.close()
                 log_action(active_event_id, "Atualizou os valores de troco devolvido pelos vendedores no fechamento.")
+                st.cache_data.clear()
                 st.success("Troco devolvido atualizado!")
                 st.rerun()
         else:
@@ -55,19 +67,12 @@ def render_tab_fechamento(active_event_id):
 
     st.divider()
     
-    df_rounds_f = pd.read_sql('SELECT * FROM rounds WHERE event_id=?', conn, params=(active_event_id,))
-    
-    if not df_rounds_f.empty:
-        r_ids = df_rounds_f['id'].tolist()
-        placeholders = ','.join('?' for _ in r_ids)
-        df_vr_f = pd.read_sql(f'SELECT * FROM vendor_rounds WHERE round_id IN ({placeholders})', conn, params=r_ids)
-    else:
-        df_vr_f = pd.DataFrame()
-        
-    df_s_f = pd.read_sql('SELECT * FROM sangrias WHERE event_id=?', conn, params=(active_event_id,))
-    
-    caixa_inicial = get_setting(active_event_id, 'caixa_inicial', 0.0)
-    dinheiro_caixa_final = get_setting(active_event_id, 'dinheiro_fechamento', 0.0)
+    # Todas as leituras via cache — uma única chamada consolidada para vendor_rounds
+    df_rounds_f = cached_get_rounds(active_event_id)
+    df_vr_f = cached_get_all_vendor_rounds_for_event(active_event_id)
+    df_s_f = cached_get_sangrias(active_event_id)
+    caixa_inicial = cached_get_setting(active_event_id, 'caixa_inicial', 0.0)
+    dinheiro_caixa_final = cached_get_setting(active_event_id, 'dinheiro_fechamento', 0.0)
     
     receita_total_teorica = 0.0
     total_cartelas_evento = 0
@@ -95,8 +100,6 @@ def render_tab_fechamento(active_event_id):
     
     VC = SD + TP + TS + TD
     RL = VC - caixa_inicial
-    
-    conn.close()
     
     st.subheader("Resumo dos Indicadores Finais do Evento")
     

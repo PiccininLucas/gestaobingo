@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from database.connection import get_conn
+from database.cache import cached_get_rounds, cached_get_active_vendors, cached_get_vendor_rounds
 from components.modals import add_round_modal, open_vendor_modal
 
 def render_tab_rodadas(active_event_id):
@@ -11,20 +12,15 @@ def render_tab_rodadas(active_event_id):
         
     st.divider()
     
-    conn = get_conn()
-    df_rounds = pd.read_sql('SELECT * FROM rounds WHERE event_id=? ORDER BY id', conn, params=(active_event_id,))
-    
-    query_active_vendors = '''
-        SELECT v.id, v.name 
-        FROM vendors v
-        JOIN event_vendors ev ON v.id = ev.vendor_id
-        WHERE ev.event_id = ? AND ev.is_active = TRUE
-        ORDER BY v.name
-    '''
-    df_vendors = pd.read_sql(query_active_vendors, conn, params=(active_event_id,))
+    # Leituras via cache — sem queries diretas ao Supabase
+    df_rounds = cached_get_rounds(active_event_id)
+    df_vendors = cached_get_active_vendors(active_event_id)
     
     if not df_rounds.empty and not df_vendors.empty:
-        round_options = df_rounds.apply(lambda x: f"[{int(x['id'])}] {x['round_type']} - {x['name']} (R$ {x['valor_cartela']:.2f})", axis=1).tolist()
+        round_options = df_rounds.apply(
+            lambda x: f"[{int(x['id'])}] {x['round_type']} - {x['name']} (R$ {x['valor_cartela']:.2f})",
+            axis=1
+        ).tolist()
         selected_round_str = st.selectbox("Selecione a Rodada Atual para Lançamentos", round_options)
         
         selected_round_id = int(selected_round_str.split(']')[0][1:])
@@ -35,8 +31,9 @@ def render_tab_rodadas(active_event_id):
         st.subheader("Registro das Informações por Vendedor")
         st.write("Clique no **Nome do Vendedor** para abrir seu registro de cartelas e valores:")
         
-        df_vr_all = pd.read_sql('SELECT vendor_id FROM vendor_rounds WHERE round_id=?', conn, params=(r_id,))
-        registered_vids = df_vr_all['vendor_id'].tolist()
+        # Cache por rodada — só busca novamente após TTL ou cache.clear()
+        df_vr_all = cached_get_vendor_rounds(r_id)
+        registered_vids = df_vr_all['vendor_id'].tolist() if not df_vr_all.empty else []
         
         col_h1, col_h2 = st.columns([3, 1])
         col_h1.markdown("**Nome do Vendedor**")
@@ -58,8 +55,9 @@ def render_tab_rodadas(active_event_id):
         st.divider()
         st.header("Resultado da Rodada")
         
-        df_vr = pd.read_sql('SELECT * FROM vendor_rounds WHERE round_id=?', conn, params=(r_id,))
+        df_vr = df_vr_all  # já carregado do cache acima
         if not df_vr.empty:
+            df_vr = df_vr.copy()
             df_vr['vendidas'] = df_vr['cartelas_recebidas'] + df_vr['cartelas_adicionais'] - df_vr['cartelas_devolvidas']
             total_vendidas = df_vr['vendidas'].sum()
             receita_total = total_vendidas * r_price
@@ -89,5 +87,3 @@ def render_tab_rodadas(active_event_id):
         st.warning("Cadastre vendedores na aba 'Dados do Dia'.")
     elif df_rounds.empty:
         st.info("Crie uma rodada para começar.")
-    
-    conn.close()

@@ -13,6 +13,7 @@ def add_vendor_modal():
                 conn.execute("INSERT INTO vendors (name) VALUES (?)", (vname,))
                 conn.commit()
                 st.success(f"Vendedor {vname} cadastrado com sucesso!")
+                st.cache_data.clear()
                 st.rerun()
             except Exception as e:
                 err_str = str(e)
@@ -42,6 +43,7 @@ def add_round_modal(event_id):
                 conn.commit()
                 log_action(event_id, f"Criou a rodada {round_type} - {name} com cartela a R$ {valor_cartela:.2f}")
                 st.success(f"Rodada {round_type} - {name} criada com sucesso!")
+                st.cache_data.clear()
                 st.rerun()
             except Exception as e:
                 err_str = str(e)
@@ -119,4 +121,5 @@ def open_vendor_modal(r_id, vid, vname, r_price, event_id):
         conn_local.close()
         log_action(event_id, f"Salvou registro do vendedor {vname} na rodada ID {r_id} (Cartelas vendidas: {cartelas_vendidas}, Devolvido: R$ {valor_devolvido:.2f})")
         st.toast(f"Registro de {vname} salvo!")
+        st.cache_data.clear()
         st.rerun()

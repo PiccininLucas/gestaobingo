@@ -1,17 +1,13 @@
 import streamlit as st
 import pandas as pd
-from database.connection import get_conn
+from database.cache import cached_get_logs
 
 def render_tab_logs(active_event_id):
     st.header("Logs de Auditoria do Evento")
     st.write("Acompanhe o histórico de ações e edições importantes realizadas neste evento.")
     
-    conn = get_conn()
-    try:
-        df_logs = pd.read_sql('SELECT timestamp, username, action FROM audit_logs WHERE event_id = ? ORDER BY timestamp DESC', conn, params=(active_event_id,))
-    except Exception:
-        df_logs = pd.read_sql('SELECT timestamp, action FROM audit_logs WHERE event_id = ? ORDER BY timestamp DESC', conn, params=(active_event_id,))
-    conn.close()
+    # Leitura via cache — sem query direta ao Supabase
+    df_logs = cached_get_logs(active_event_id).copy()
     
     if not df_logs.empty:
         df_logs['timestamp'] = pd.to_datetime(df_logs['timestamp']).dt.strftime('%d/%m/%Y %H:%M:%S')

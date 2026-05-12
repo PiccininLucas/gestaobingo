@@ -2,8 +2,9 @@ import streamlit as st
 import pandas as pd
 import os
 
-from database.connection import DB_FILE, get_conn, init_db
+from database.connection import DB_FILE, get_conn, init_db_once
 from database.queries import get_current_date_name
+from database.cache import cached_get_events
 from components.modals import add_vendor_modal
 from views.tab_dados import render_tab_dados
 from views.tab_rodadas import render_tab_rodadas
@@ -44,28 +45,33 @@ def check_password():
 if not check_password():
     st.stop()
 
-# Inicializa banco de dados
-init_db()
+# Inicializa banco de dados (apenas 1x por sessão do servidor)
+init_db_once()
 
 # Sidebar para Gestão de Eventos
 st.sidebar.title("📅 Gestão de Eventos")
 
-conn = get_conn()
-if hasattr(conn, 'is_postgres'):
+# Indicador de conexão (sem abrir conexão extra)
+_is_postgres = "connections" in st.secrets or "postgres" in st.secrets
+if _is_postgres:
     st.sidebar.success("🟢 Conectado à Nuvem (Supabase)")
 else:
     st.sidebar.warning("🟡 Modo de Segurança: Banco Local (SQLite)")
 
-df_events = pd.read_sql('SELECT * FROM events ORDER BY id DESC', conn)
+# Leitura de eventos via cache (evita query ao Supabase a cada render)
+df_events = cached_get_events()
 
 with st.sidebar.expander("➕ Novo Evento", expanded=False):
     novo_nome = st.text_input("Nome do Evento", value=get_current_date_name())
     if st.button("Criar Evento", use_container_width=True, type="primary"):
         if novo_nome:
             try:
-                conn.execute("INSERT INTO events (name) VALUES (%s) ON CONFLICT (name) DO NOTHING" if hasattr(conn, 'is_postgres') else "INSERT OR IGNORE INTO events (name) VALUES (?)", (novo_nome,))
-                conn.commit()
+                _conn = get_conn()
+                _conn.execute("INSERT INTO events (name) VALUES (%s) ON CONFLICT (name) DO NOTHING" if _is_postgres else "INSERT OR IGNORE INTO events (name) VALUES (?)", (novo_nome,))
+                _conn.commit()
+                _conn.close()
                 st.success(f"Evento criado!")
+                st.cache_data.clear()
                 st.rerun()
             except Exception as e:
                 st.error("Já existe um evento com este nome.")
@@ -74,7 +80,6 @@ if df_events.empty:
     st.sidebar.warning("Nenhum evento criado. Crie um evento para começar.")
     st.title("🎱 Sistema de Controle do Bingo 2026")
     st.info("⬅️ Crie um evento na barra lateral para iniciar.")
-    conn.close()
     st.stop()
 
 # Seleção de Evento
@@ -97,8 +102,6 @@ if st.sidebar.button("🚪 Sair (Logout)", use_container_width=True):
     st.session_state["password_correct"] = False
     st.session_state["logged_user"] = None
     st.rerun()
-
-conn.close()
 
 # Interface Principal
 st.title(f"🎱 Sistema de Controle - {active_event_name}")

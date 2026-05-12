@@ -94,6 +94,15 @@ def get_conn():
         return PostgresConnWrapper(conn, pool)
     return sqlite3.connect(DB_FILE, check_same_thread=False)
 
+@st.cache_resource
+def init_db_once():
+    """
+    Wrapper cacheado de init_db. Garante que a inicialização do banco
+    rode apenas UMA VEZ por sessão do servidor Streamlit, evitando
+    múltiplas chamadas ao Supabase a cada re-render.
+    """
+    init_db()
+
 def init_db():
     conn = get_conn()
     c = conn.cursor()

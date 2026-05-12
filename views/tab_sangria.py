@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from database.connection import get_conn
 from database.queries import log_action
+from database.cache import cached_get_sangrias
 
 def render_tab_sangria(active_event_id):
     st.header("Sangria (Envio de Dinheiro ao Caixa Central)")
@@ -11,18 +12,24 @@ def render_tab_sangria(active_event_id):
     if st.button("Registrar Sangria", type="primary"):
         if sangria_val > 0:
             conn = get_conn()
-            conn.execute("INSERT INTO sangrias (event_id, valor) VALUES (?, ?)", (active_event_id, sangria_val))
+            conn.execute(
+                "INSERT INTO sangrias (event_id, valor) VALUES (%s, %s)"
+                if hasattr(conn, 'is_postgres')
+                else "INSERT INTO sangrias (event_id, valor) VALUES (?, ?)",
+                (active_event_id, sangria_val)
+            )
             conn.commit()
             conn.close()
             log_action(active_event_id, f"Registrou uma sangria de R$ {sangria_val:.2f}")
+            st.cache_data.clear()
             st.success(f"Sangria de R$ {sangria_val:.2f} registrada com sucesso!")
         else:
             st.error("O valor deve ser maior que zero.")
             
     st.subheader("Histórico de Sangrias")
-    conn = get_conn()
-    df_sangrias = pd.read_sql('SELECT id, timestamp, valor FROM sangrias WHERE event_id=? ORDER BY timestamp DESC', conn, params=(active_event_id,))
-    conn.close()
+
+    # Leitura via cache — sem query direta
+    df_sangrias = cached_get_sangrias(active_event_id).copy()
     
     if not df_sangrias.empty:
         df_sangrias['timestamp'] = pd.to_datetime(df_sangrias['timestamp']).dt.strftime('%d/%m/%Y %H:%M:%S')

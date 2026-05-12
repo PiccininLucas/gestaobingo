@@ -20,6 +20,8 @@ def set_setting(event_id, key, value):
     ''', (event_id, key, value))
     conn.commit()
     conn.close()
+    # Invalida cache para que leituras seguintes reflitam o novo valor
+    st.cache_data.clear()
 
 def log_action(event_id, action):
     conn = get_conn()
@@ -32,6 +34,8 @@ def log_action(event_id, action):
         conn.execute("INSERT INTO audit_logs (event_id, action) VALUES (?, ?)", (event_id, action))
     conn.commit()
     conn.close()
+    # Invalida cache para que o log apareça imediatamente
+    st.cache_data.clear()
 
 def get_current_date_name():
     dias_semana = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
