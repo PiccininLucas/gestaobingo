@@ -6,13 +6,18 @@ import datetime
 
 # --- ADAPTADOR POSTGRESQL / SQLITE ---
 # Este bloco permite que o código original (SQLite) rode no PostgreSQL do Supabase sem alterar a lógica
-_original_read_sql = pd.read_sql
-def custom_read_sql(sql, con, *args, **kwargs):
-    if hasattr(con, 'is_postgres') and con.is_postgres:
-        sql = sql.replace('?', '%s')
-        return _original_read_sql(sql, con.conn, *args, **kwargs)
-    return _original_read_sql(sql, con, *args, **kwargs)
-pd.read_sql = custom_read_sql
+if not hasattr(pd, '_custom_read_sql_installed'):
+    pd._original_read_sql_saved = pd.read_sql
+    def custom_read_sql(sql, con, *args, **kwargs):
+        if hasattr(con, 'is_postgres') and con.is_postgres:
+            sql = sql.replace('?', '%s')
+            # Correção para conversão de tipo boolean no Postgres
+            sql = sql.replace('is_active = 1', 'is_active = TRUE')
+            sql = sql.replace('is_active = 0', 'is_active = FALSE')
+            return pd._original_read_sql_saved(sql, con.conn, *args, **kwargs)
+        return pd._original_read_sql_saved(sql, con, *args, **kwargs)
+    pd.read_sql = custom_read_sql
+    pd._custom_read_sql_installed = True
 
 class PostgresCursorWrapper:
     def __init__(self, cursor):
@@ -24,6 +29,8 @@ class PostgresCursorWrapper:
         sql = sql.replace('INTEGER PRIMARY KEY AUTOINCREMENT', 'SERIAL PRIMARY KEY')
         sql = sql.replace('DATETIME DEFAULT CURRENT_TIMESTAMP', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
         sql = sql.replace('BOOLEAN DEFAULT 1', 'BOOLEAN DEFAULT TRUE')
+        sql = sql.replace('is_active = 1', 'is_active = TRUE')
+        sql = sql.replace('is_active = 0', 'is_active = FALSE')
         
         if "INSERT OR IGNORE INTO vendors" in sql:
             sql = "INSERT INTO vendors (name) VALUES (%s) ON CONFLICT (name) DO NOTHING"
@@ -509,7 +516,7 @@ with tab2:
         SELECT v.id, v.name 
         FROM vendors v
         JOIN event_vendors ev ON v.id = ev.vendor_id
-        WHERE ev.event_id = ? AND ev.is_active = 1
+        WHERE ev.event_id = ? AND ev.is_active = TRUE
         ORDER BY v.name
     '''
     df_vendors = pd.read_sql(query_active_vendors, conn, params=(active_event_id,))
